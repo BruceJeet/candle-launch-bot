@@ -1,0 +1,8 @@
+node_modules
+dist/
+state/
+state-*/
+*.sqlite
+*.sqlite-*
+.env
+*.tgz

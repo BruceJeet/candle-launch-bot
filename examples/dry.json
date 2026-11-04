@@ -1,0 +1,32 @@
+{
+  "comment": "Dry run: decides and logs, never trades. No API key needed. Set your wallet (and a key for live) before going live.",
+  "mode": "dry",
+  "payer": "embedded",
+  "apiKeyEnv": "CANDLE_API_KEY",
+  "rpcUrlEnv": "SOLANA_RPC_URL",
+  "wallet": "11111111111111111111111111111111",
+  "stateDir": "./state-dry",
+  "buy": {
+    "sol": 0.01,
+    "maxSlippageBps": 500,
+    "maxOpen": 3,
+    "lifetimeSol": 0.1,
+    "maxPerCoin": 1
+  },
+  "sell": {
+    "maxSlippageBps": 1000
+  },
+  "filters": {
+    "launchModes": [
+      "open",
+      "exp-custom"
+    ],
+    "maxAgeSec": 60,
+    "maxImpactBps": 300
+  },
+  "exit": {
+    "strategy": "tpsl",
+    "takeProfit": 2,
+    "stopLoss": 0.5
+  }
+}

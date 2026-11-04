@@ -1,0 +1,14 @@
+{
+  "comment": "Live from the account's embedded wallet: only CANDLE_API_KEY is needed (Candle signs).",
+  "mode": "live",
+  "payer": "embedded",
+  "apiKeyEnv": "CANDLE_API_KEY",
+  "rpcUrlEnv": "SOLANA_RPC_URL",
+  "wallet": "<the key's embedded Solana wallet address>",
+  "stateDir": "./state-live",
+  "buy": { "sol": 0.01, "maxSlippageBps": 500, "maxOpen": 3, "lifetimeSol": 0.1 },
+  "sell": { "maxSlippageBps": 1000 },
+  "filters": { "launchModes": ["open", "exp-custom"], "maxAgeSec": 60, "maxImpactBps": 300 },
+  "exit": { "strategy": "preGrad", "progress": 0.8, "stopLoss": 0.5 },
+  "alerts": { "webhookEnv": "ALERT_WEBHOOK_URL" }
+}

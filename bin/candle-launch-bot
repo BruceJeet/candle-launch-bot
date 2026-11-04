@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+// The published package runs the compiled dist/; a source checkout runs src/ directly (Node strips types).
+import { existsSync } from "node:fs";
+const dist = new URL("../dist/cli.js", import.meta.url);
+const entry = existsSync(dist) ? dist : new URL("../src/cli.ts", import.meta.url);
+const { main } = await import(entry.href);
+process.exit(await main(process.argv.slice(2)));

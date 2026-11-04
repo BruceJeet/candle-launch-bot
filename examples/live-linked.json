@@ -1,0 +1,15 @@
+{
+  "comment": "Live from a TEE trading wallet: transactions are signed on this machine with the key's P-256 signer.",
+  "mode": "live",
+  "payer": "linked",
+  "apiKeyEnv": "CANDLE_API_KEY",
+  "rpcUrlEnv": "SOLANA_RPC_URL",
+  "wallet": "<your TEE trading wallet address>",
+  "signer": { "store": "keychain" },
+  "stateDir": "./state-live",
+  "buy": { "sol": 0.01, "maxSlippageBps": 500, "maxOpen": 3, "lifetimeSol": 0.1 },
+  "sell": { "maxSlippageBps": 1000 },
+  "filters": { "launchModes": ["open", "exp-custom"], "maxAgeSec": 60, "maxImpactBps": 300 },
+  "exit": { "strategy": "ladder", "rungs": [{ "at": 2, "sell": 0.3 }, { "at": 5, "sell": 0.3 }, { "at": 10, "sell": 0.2 }] },
+  "alerts": { "webhookEnv": "ALERT_WEBHOOK_URL" }
+}

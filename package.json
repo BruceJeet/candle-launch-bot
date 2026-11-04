@@ -1,0 +1,60 @@
+{
+  "name": "candle-launch-bot",
+  "version": "0.1.2",
+  "description": "Buys Candle launches as they appear and exits them by a pluggable strategy. A Solana bot built on @candledottv/agent-sdk.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BruceJeet/candle-launch-bot.git"
+  },
+  "homepage": "https://github.com/BruceJeet/candle-launch-bot#readme",
+  "bugs": {
+    "url": "https://github.com/BruceJeet/candle-launch-bot/issues"
+  },
+  "bin": {
+    "candle-launch-bot": "bin/candle-launch-bot"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "examples",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p .",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@candledottv/agent-sdk": "0.6.14"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2"
+  },
+  "keywords": [
+    "candle",
+    "solana",
+    "trading-bot",
+    "sniper",
+    "memecoin",
+    "launch",
+    "bot",
+    "agent"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  }
+}
