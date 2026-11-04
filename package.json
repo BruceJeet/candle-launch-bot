@@ -1,6 +1,6 @@
 {
   "name": "candle-launch-bot",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Buys Candle launches as they appear and exits them by a pluggable strategy. A Solana bot built on @candledottv/agent-sdk.",
   "type": "module",
   "license": "MIT",

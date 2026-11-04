@@ -111,8 +111,11 @@ With `embedded`, Candle signs and broadcasts inside the build call, so the bot c
 (it can with `linked`). What it does instead:
 
 - every order has one `clientTradeId` for life;
-- a build that fails in any way other than Candle's own 4xx refusal counts as possibly executed (it counts against
-  `lifetimeSol` and `maxPerCoin`);
+- a build that fails in any way other than Candle's own 4xx refusal before execution (no `stage`, or
+  `stage: "not_broadcast"`, with no signature and nothing recorded) counts as possibly executed (it counts against
+  `lifetimeSol` and `maxPerCoin`). Such a refusal is unspent only while every attempt of the order was one; after an
+  attempt that may have run, the wallet and the token account's history are checked and the order stays counted. This
+  applies to buys; a sell build refusal ends the order only on a stage-less refusal at its first attempt;
 - the next attempt first reads Candle's trade job: `confirmed` is booked from its transaction, an id still in flight
   is waited on (also at the attempt cap), and a same-id rebuild is Candle's replay of that trade, never a second one.
 
@@ -199,7 +202,7 @@ Files in the state dir, read at the top of every cycle:
 | File | What |
 |---|---|
 | `ledger.sqlite` | positions, orders, every attempt with its full error (program logs included), launches seen, alerts |
-| `status.json` | written every cycle: equity, open positions with price and multiple, caps used, order-queue health, detection stats and latencies |
+| `status.json` | written every cycle: equity, open positions with price and multiple, caps used, order-queue health, detection stats and latencies. `detection.chain.lastOkMs` is the last launch found on chain (still on a quiet day); `lastPollOkMs` (last answered signature poll) and `lastEventMs` (last logs-socket event) show the watcher is alive |
 | `events.jsonl` | one JSON line per event (also on stdout) |
 | `lock` | one process per state dir |
 
@@ -261,7 +264,7 @@ Unknown keys are refused at every level, so a typo fails at start instead of bei
 | `filters.launchModes` | Candle launch modes to buy: `open`, `exclusive`, `exp-a`, `exp-b`, `exp-c`, `exp-custom` (also `test-open`, `test-exclusive`); anything else is a config error |
 | `filters.maxAgeSec` | skip a coin older than this at decision time (age from the launch transaction's block time) |
 | `filters.maxImpactBps` | skip when your ticket's average fill price would be more than this above the spot price (`s1/s0 - 1` on the curve's square-root price, after the curve's fee), from the curve account; checked again before every buy retry |
-| `filters.inferModeFromCurve` | a launch seen on chain before Candle's list has it counts as `open` when its curve account matches the open preset exactly (threshold, fee, both liquidity segments, start price). Every other curve, `exclusive` and all `exp-*` modes included, waits for Candle's `tier`, since an exp-custom curve can take any threshold. Default true |
+| `filters.inferModeFromCurve` | a launch seen on chain before Candle's list has it counts as `open` when its curve account matches the open preset exactly (threshold, fee, both liquidity segments, start price). Every other curve, `exclusive` and all `exp-*` modes included, waits for Candle's `tier`, since an exp-custom curve can take any threshold. A launch whose mode did not come from Candle's list is bought only once Candle's market record says `candleLaunched: true` (and not `trade.routable: false`); until then it waits, re-read every 2 s, and is skipped with `no Candle market` at `maxAgeSec`. Candle refuses every build of a market it doesn't have. Default true |
 | `filters.creatorAllow` / `creatorDeny` | addresses; matched against the token list's creator and the launch transaction's signer. The bot's own `wallet` is always denied |
 | `filters.nameMatch` / `symbolMatch` | case-insensitive regular expressions |
 | `detect.*` | turn a source off, set poll intervals |

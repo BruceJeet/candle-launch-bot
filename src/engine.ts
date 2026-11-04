@@ -22,8 +22,29 @@ import type { ExitStrategy, PositionView } from "./strategies/types.ts";
 import type { Alerter } from "./alerts.ts";
 
 export interface MarketInfoSource {
-  /** Candle's public market record: launch mode (`tier`), name/symbol and decimals for a chain-first launch. */
+  /**
+   * Candle's public market record: launch mode (`tier`), name/symbol and decimals for a chain-first launch, and
+   * whether Candle has the market at all (`candleLaunched`, `trade.routable`).
+   */
   getMarket(chain: "solana", mint: string): Promise<any>;
+}
+
+/** How often a chain-first launch's Candle market is re-read while the bot waits for it (Candle caches ~5 s). */
+export const MARKET_CHECK_MS = 2_000;
+/** The verdict reason while a launch Candle cannot trade waits, and the skip reason when it ages out. */
+export const NO_CANDLE_MARKET = "no Candle market";
+
+/**
+ * Does Candle's market record say Candle has this market and can route a trade on it? Candle answers 200 for every
+ * mint, with `candleLaunched: false` for an unknown one or one launched with non-production visibility, so only an
+ * explicit `candleLaunched: true` passes; `trade.routable: false` refuses. Anything else (missing fields, an older
+ * API) is unknown, and unknown never passes.
+ */
+export function candleHasMarket(m: any): { ok: true } | { ok: false; why: string } {
+  if (!m || typeof m !== "object") return { ok: false, why: "no market record" };
+  if (m.candleLaunched !== true) return { ok: false, why: m.candleLaunched === false ? "not a Candle market" : "candleLaunched unknown" };
+  if (m.trade && m.trade.routable === false) return { ok: false, why: `not routable${m.trade.reason ? ` (${m.trade.reason})` : ""}` };
+  return { ok: true };
 }
 
 export interface EngineDeps {
@@ -56,6 +77,13 @@ interface Pending {
   firstSeenMs: number;
   lastReason: string;
   marketTried: number;
+  /** The launch mode came from Candle's market read (not from Candle's token list). */
+  modeFromMarket?: boolean;
+  /** Candle's market record said it has this market (see candleHasMarket). */
+  marketOk?: boolean;
+  /** When the market was last read, and why the last read did not pass. */
+  marketCheckedAt?: number;
+  marketWhy?: string;
 }
 
 const DEFAULT_DECIMALS = 6;
@@ -245,7 +273,7 @@ export class Engine {
       const v = await this.decide(l, p);
       const sights = this.d.detector.sightingsFor(mint);
       if (v.verdict === "wait") {
-        if (v.reason !== p.lastReason) this.d.log.info("launch_wait", { mint, reason: v.reason });
+        if (v.reason !== p.lastReason) this.d.log.info("launch_wait", { mint, reason: v.reason, ...(v.reason === NO_CANDLE_MARKET ? { market: p.marketWhy ?? null } : {}) });
         p.lastReason = v.reason;
         continue;
       }
@@ -274,16 +302,58 @@ export class Engine {
   }
 
   private async decide(l: Launch, p: Pending) {
+    const v = await this.verdict(l, p);
+    // A launch that waited for its Candle market and aged out is skipped for that reason, not just its age.
+    if (v.verdict === "skip" && p.lastReason === NO_CANDLE_MARKET && /^age /.test(v.reason)) {
+      this.d.log.info("launch_no_market", { mint: l.mint, why: p.marketWhy ?? null });
+      return { verdict: "skip" as const, reason: NO_CANDLE_MARKET };
+    }
+    // A launch whose mode Candle's token list did not give (inferred from the curve, or read from Candle's market
+    // record) is bought only once Candle's market record says Candle has the market: otherwise every build is refused
+    // (MARKET_NOT_FOUND). A launch from Candle's list never waits here and costs no extra call.
+    if (v.verdict === "buy" && (!l.launchMode || p.modeFromMarket) && !p.marketOk) {
+      if (this.d.markets && (p.marketCheckedAt === undefined || this.now() - p.marketCheckedAt >= MARKET_CHECK_MS)) {
+        p.marketCheckedAt = this.now();
+        try {
+          this.noteMarket(p, await this.readMarket(l.mint));
+        } catch (e) {
+          p.marketWhy = `market read failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`;
+        }
+      } else if (!this.d.markets) p.marketWhy = "no market source";
+      if (!p.marketOk) return { verdict: "wait" as const, reason: NO_CANDLE_MARKET };
+    }
+    return v;
+  }
+
+  private readMarket(mint: string): Promise<any> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      this.d.markets!.getMarket("solana", mint),
+      new Promise<never>((_r, rej) => (timer = setTimeout(() => rej(new Error("market read timeout")), MARKET_READ_TIMEOUT_MS))),
+    ]).finally(() => clearTimeout(timer));
+  }
+
+  private noteMarket(p: Pending, m: any): void {
+    const has = candleHasMarket(m);
+    if (has.ok) {
+      p.marketOk = true;
+      p.marketWhy = undefined;
+    } else p.marketWhy = has.why;
+  }
+
+  private async verdict(l: Launch, p: Pending) {
     const caps = { open: this.openCount(), entriesForMint: this.d.ledger.entriesForMint(l.mint, this.dry), lifetimeLamports: this.d.ledger.lifetimeBuyLamports(this.d.cfg.mode === "dry"), paused: this.paused() };
     let v = evaluate(this.d.cfg, l, null, caps, this.now());
     if (v.verdict === "wait" && /mode unknown|name unknown|symbol unknown|creator unknown/.test(v.reason) && this.d.markets && p.marketTried < 10) {
       p.marketTried++;
       try {
-        const m = await Promise.race([
-          this.d.markets.getMarket("solana", l.mint),
-          new Promise<never>((_r, rej) => setTimeout(() => rej(new Error("market read timeout")), MARKET_READ_TIMEOUT_MS)),
-        ]);
-        if (m?.tier && !l.launchMode) l.launchMode = String(m.tier);
+        const m = await this.readMarket(l.mint);
+        p.marketCheckedAt = this.now();
+        this.noteMarket(p, m);
+        if (m?.tier && !l.launchMode) {
+          l.launchMode = String(m.tier);
+          p.modeFromMarket = true;
+        }
         if (m?.metadata?.name && l.name === undefined) l.name = String(m.metadata.name);
         if (m?.metadata?.symbol && l.symbol === undefined) l.symbol = String(m.metadata.symbol);
         if (typeof m?.decimals === "number" && l.decimals === undefined) l.decimals = m.decimals;
@@ -526,7 +596,7 @@ export class Engine {
       caps: { open: this.openCount(), maxOpen: this.d.cfg.buy.maxOpen, lifetimeSolUsed: Number(this.d.ledger.lifetimeBuyLamports(dry)) / 1e9, lifetimeSol: this.d.cfg.buy.lifetimeSol },
       queue: this.d.ledger.queueHealth(now, dry),
       alertsSent: this.d.alerter.sent,
-      detection: { ...det, pending: [...this.pending.values()].map((p) => ({ mint: p.launch.mint, waiting: p.lastReason })), recent },
+      detection: { ...det, pending: [...this.pending.values()].map((p) => ({ mint: p.launch.mint, waiting: p.lastReason, ...(p.lastReason === NO_CANDLE_MARKET && p.marketWhy ? { market: p.marketWhy } : {}) })), recent },
       positions: open,
       stats: this.stats,
     });

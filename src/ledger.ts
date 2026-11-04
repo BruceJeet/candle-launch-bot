@@ -292,6 +292,26 @@ export class Ledger {
     this.db.prepare("update attempts set ended_at = ?, outcome = ?, error_code = ?, error_json = ? where id = ?").run(now, outcome, code, errorJson, id);
   }
 
+  /** Outcome of a main-payer build that Candle refused before execution (nothing signed or sent). */
+  static readonly REFUSED_UNSPENT = "refused:unspent";
+
+  setAttemptOutcome(id: number, outcome: string): void {
+    this.db.prepare("update attempts set outcome = ? where id = ?").run(outcome, id);
+  }
+
+  /**
+   * True only when attempts 1..n of the order each left a row and every row of the order is a build Candle refused
+   * before execution (Ledger.REFUSED_UNSPENT). A missing, unfinished or other row (an error that may have executed, a
+   * probe, a replay) is false.
+   */
+  allAttemptsRefusedUnspent(orderId: number, n: number): boolean {
+    const rows = this.attemptsFor(orderId);
+    if (!rows.length || rows.some((r) => r.outcome !== Ledger.REFUSED_UNSPENT)) return false;
+    const seen = new Set(rows.map((r) => r.n));
+    for (let i = 1; i <= n; i++) if (!seen.has(i)) return false;
+    return true;
+  }
+
   attemptsFor(orderId: number): Array<{ n: number; started_at: number; ended_at: number | null; outcome: string | null; error_code: string | null; error_json: string | null }> {
     return this.db.prepare("select n, started_at, ended_at, outcome, error_code, error_json from attempts where order_id = ? order by id").all(orderId) as any;
   }

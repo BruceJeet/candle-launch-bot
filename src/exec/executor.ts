@@ -17,7 +17,7 @@
  */
 import type { Config } from "../config.ts";
 import type { Logger } from "../log.ts";
-import type { Ledger, OrderRow, PositionRow, QtySource } from "../ledger.ts";
+import { Ledger, type OrderRow, type PositionRow, type QtySource } from "../ledger.ts";
 import type { Alerter } from "../alerts.ts";
 import { errorJson } from "../redact.ts";
 import { blockhashValid, getTransaction, signatureStatus, tokenAccounts, tokenBalance, type Rpc } from "../solana/rpc.ts";
@@ -266,7 +266,7 @@ export class Executor {
         finalCheck = true;
       } else {
         if (failedMain && o.side === "buy") return this.endBuy(o, pos, { status: "failed", code: o.last_error_code ?? "MAX_ATTEMPTS" });
-        return this.terminal(o, "failed", o.last_error_code ?? "MAX_ATTEMPTS");
+        return this.terminal(o, this.outOfAttempts(o), o.last_error_code ?? "MAX_ATTEMPTS");
       }
     }
     // Everything that could be live under this order was settled above, so a stale, paused or chasing buy stops here.
@@ -338,8 +338,17 @@ export class Executor {
       this.d.ledger.updateOrder(o.id, { last_error_code: info.code, last_error: ej, updated_at: this.now() });
       this.d.log.warn("order_attempt_error", { order: o.id, side: o.side, mint: pos.mint, attempt: n, phase, code: info.code, status: info.status, stage: info.stage, reason: info.reason, logs: info.logs });
       const fresh = this.d.ledger.order(o.id)!;
-      return this.apply(fresh, pos, await this.classify(fresh, pos, info, phase, n), e);
+      return this.apply(fresh, pos, await this.classify(fresh, pos, info, phase, n, att), e);
     }
+  }
+
+  /**
+   * The terminal status of an order out of attempts: `rejected` (not counted toward lifetimeSol) for a main-payer buy
+   * whose every attempt Candle refused before execution and that never signed; `failed` otherwise.
+   */
+  private outOfAttempts(o: OrderRow): "failed" | "rejected" {
+    const main = this.d.rail?.payer?.type === "main";
+    return main && o.side === "buy" && o.ever_signed === 0 && o.signature === null && o.candle_confirmed !== 1 && this.d.ledger.allAttemptsRefusedUnspent(o.id, o.attempts) ? "rejected" : "failed";
   }
 
   /** Would this order still be placed now? Sells always; a buy only before its deadline, unpaused, impact passing. */
@@ -397,7 +406,7 @@ export class Executor {
     }
   }
 
-  private async classify(o: OrderRow, pos: PositionRow, info: ErrorInfo, phase: "build" | "sign" | "submit", n: number): Promise<Outcome> {
+  private async classify(o: OrderRow, pos: PositionRow, info: ErrorInfo, phase: "build" | "sign" | "submit", n: number, att: number): Promise<Outcome> {
     const back = this.backoffMs(n);
     if (info.stage === "executed" || info.reason === "prior_attempt_on_chain") {
       const sig = info.signature ?? o.signature;
@@ -421,23 +430,43 @@ export class Executor {
       return { kind: "retry", code: info.code, detail: "rate limited", afterMs: Math.max(after, back) };
     }
     if (this.d.rail?.payer?.type === "main" && phase === "build") {
-      // Payer main executes inside build, so a failed build may have spent. Candle's own non-retryable 4xx (no stage)
-      // is a refusal before execution. Anything else may have executed: mark it possibly spent; the next attempt reads
-      // Candle's job first, and a same-id rebuild is Candle's replay of that trade, never a second one.
-      // A refusal only when it names nothing that ran: no signature, no stage, nothing recorded.
-      if (info.candle && !info.retryable && (info.status ?? 0) >= 400 && (info.status ?? 0) < 500 && !info.signature && !info.stage && info.recorded === undefined) {
-        // Proven unspent only when this was the first attempt (no earlier build could have run).
-        if (n === 1) {
+      // Payer main executes inside build, so a failed build may have spent. Candle's own 4xx that says execution never
+      // began is a refusal before execution: no stage ("the request never reached signing, so nothing was sent"), or
+      // stage "not_broadcast" ("says the same thing": every planner refusal on /build, such as MARKET_NOT_FOUND, and a
+      // signing refusal), with no signature and nothing recorded. Candle's agent-trading docs, Errors and "Did it
+      // reach the chain?". Timeouts and rate limits (408/425/429) are never one. Anything else may have executed:
+      // the next attempt reads Candle's job first, and a same-id rebuild is Candle's replay, never a second trade.
+      const status = info.status ?? 0;
+      const preExecution = info.candle && status >= 400 && status < 500 && status !== 408 && status !== 425 && status !== 429
+        && !info.signature && info.recorded === undefined && (info.stage === undefined || info.stage === "not_broadcast");
+      if (o.side === "sell") {
+        // Sells keep the earlier rule (only a stage-less non-retryable 4xx is a refusal, on attempt 1): a sell's
+        // refusal counts toward exit_stuck, and a sell spends no ticket, so not_broadcast changes nothing it books.
+        if (info.candle && !info.retryable && status >= 400 && status < 500 && !info.signature && !info.stage && info.recorded === undefined) {
+          if (n === 1) {
+            this.d.ledger.updateOrder(o.id, { ever_signed: 0 });
+            return { kind: "rejected", code: info.code, detail: "build refused" };
+          }
+          return { kind: "rejected", code: info.code, detail: "build refused after an earlier attempt that may have run" };
+        }
+      } else if (preExecution) {
+        this.d.ledger.setAttemptOutcome(att, Ledger.REFUSED_UNSPENT);
+        // Unspent only when every attempt of this order was such a refusal (no earlier build could have run).
+        if (o.signature === null && o.candle_confirmed !== 1 && this.d.ledger.allAttemptsRefusedUnspent(o.id, n)) {
           this.d.ledger.updateOrder(o.id, { ever_signed: 0 });
-          return { kind: "rejected", code: info.code, detail: "build refused" };
+          if (!info.retryable) return { kind: "rejected", code: info.code, detail: "build refused" };
+          const after = info.retryAfter ? Math.max(0, info.retryAfter - this.now()) : 0;
+          return { kind: "retry", code: info.code, detail: "build refused before execution; retrying", afterMs: Math.max(back, after) };
         }
-        // An earlier attempt may have executed: the same wallet/tx check as any ending buy; stays counted.
-        const detail = "build refused after an earlier attempt that may have run";
-        if (o.side === "buy") {
-          const adopt = await this.unexplainedTokens(o, pos, { status: "rejected", code: info.code, detail });
-          if (adopt) return adopt;
+        if (!info.retryable) {
+          // An earlier attempt may have executed: the same wallet/tx check as any ending buy; stays counted.
+          const detail = "build refused after an earlier attempt that may have run";
+          if (o.side === "buy") {
+            const adopt = await this.unexplainedTokens(o, pos, { status: "rejected", code: info.code, detail });
+            if (adopt) return adopt;
+          }
+          return { kind: "rejected", code: info.code, detail };
         }
-        return { kind: "rejected", code: info.code, detail };
       }
       if (info.signature) {
         this.d.ledger.updateOrder(o.id, { signature: info.signature, signed_at: this.now() });
@@ -732,7 +761,7 @@ export class Executor {
         // Never terminal here while something may be live: a persisted signature, or a main-payer build that may have
         // executed (step 3 decides after reading Candle's job).
         const maybeLive = !!fresh.signature || (this.d.rail?.payer?.type === "main" && fresh.ever_signed === 1) || fresh.last_error_code === "IDEMPOTENCY_CONFLICT";
-        if (attempts >= fresh.max_attempts && !maybeLive) this.terminal(this.d.ledger.order(o.id)!, "failed", r.code);
+        if (attempts >= fresh.max_attempts && !maybeLive) this.terminal(this.d.ledger.order(o.id)!, this.outOfAttempts(fresh), r.code);
         return;
       }
       case "rejected":

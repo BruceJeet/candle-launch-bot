@@ -167,7 +167,9 @@ export class Detector {
   /** Signatures whose launch transaction could not be fetched yet: retried on every poll (bounded). */
   private retries = new Map<string, number>();
   private lastSigPoll = 0;
-  readonly stats = { api: { polls: 0, errors: 0, lastOkMs: 0 }, chain: { events: 0, polls: 0, errors: 0, wsUp: false, lastOkMs: 0 } };
+  // chain.lastOkMs: the last launch found on chain (still on quiet days). chain.lastPollOkMs: the last signature poll
+  // that answered; chain.lastEventMs: the last event the logs socket delivered. Those two say the watcher is healthy.
+  readonly stats = { api: { polls: 0, errors: 0, lastOkMs: 0 }, chain: { events: 0, polls: 0, errors: 0, wsUp: false, lastOkMs: 0, lastPollOkMs: 0, lastEventMs: 0 } };
   private deps: DetectorDeps;
   private opts: DetectorOptions;
   private now: () => number;
@@ -285,6 +287,7 @@ export class Detector {
 
   private async onLogs(e: LogsEvent): Promise<void> {
     this.stats.chain.events++;
+    this.stats.chain.lastEventMs = this.now();
     // Every signature the socket delivers is marked, so the poller only fetches what the socket missed.
     const fresh = this.markSig(e.signature);
     if (!fresh || e.err || !e.logs.includes(INIT_LOG)) return;
@@ -371,6 +374,7 @@ export class Detector {
       this.stats.chain.errors++;
       return;
     }
+    this.stats.chain.lastPollOkMs = this.now();
     for (const sig of [...this.retries.keys()]) await this.fetchLaunch(sig);
     const fresh = sigs.filter((s) => s && typeof s.signature === "string" && !s.err).reverse();
     if (prime || !this.polledOnce) {
