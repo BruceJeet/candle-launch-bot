@@ -1,5 +1,7 @@
 # candle-launch-bot
 
+> **Moved.** candle-launch-bot now lives in [BruceJeet/candle-bots](https://github.com/BruceJeet/candle-bots/tree/main/packages/launch-bot), with the other Candle bots on one shared core. This repo is archived at 0.1.3. The npm package name stays `candle-launch-bot`; versions from 0.2.0 on come from the new repo.
+
 Buys [Candle](https://candle.tv) launches as they appear and exits them by a strategy you pick. One config
 file, one process, a local SQLite ledger. Built on Candle's official SDK,
 [`@candledottv/agent-sdk`](https://www.npmjs.com/package/@candledottv/agent-sdk) (pinned at 0.6.14).
